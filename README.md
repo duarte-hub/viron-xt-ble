@@ -8,8 +8,9 @@ chlorinators, which [pychlorinator](https://github.com/pbutterworth/pychlorinato
 reverse engineered. This repo adds the pump side: the command map, the control commands, and
 an ESPHome component. Everything known is written up in [NOTES.md](NOTES.md).
 
-Tested on one pump: a Viron P320C XT, firmware 5.1. The ESPHome component compiles but has
-had little time on real hardware — treat it as experimental.
+Tested on one pump: a Viron P320C XT, firmware 5.1, with a classic ESP32. Reading state,
+selecting speeds from Home Assistant and reconnecting after a pump power-cycle are confirmed
+on hardware; it has only hours of runtime so far, so treat it as experimental.
 
 ## What works
 

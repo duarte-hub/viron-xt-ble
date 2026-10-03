@@ -194,7 +194,7 @@ Recipe for the ESP32: connect → read `…0001` → write AES(key, session XOR 
 → subscribe `…0003` → writes to `…0004`. Poll cmd 100/105 at least every few seconds
 (10 s idle timeout). Speed = action 6/7/8, or rewrite a preset via cmd 102.
 
-Open: does `XXXX` survive a power-cycle; limits accepted by cmd 102 (cmd 101 suggests
+Open: limits accepted by cmd 102 (cmd 101 suggests
 600..3450); whether setup writes hit flash (wear) — prefer switching between three presets
 over rewriting them continuously; behaviour of the pump when the link drops (it should just
 keep its last state, as with the keypad — unverified).
@@ -206,3 +206,18 @@ handshake, crypto, polling and control methods; entities are template platforms 
 Compiles on ESPHome 2026.9.1 (esp-idf, esp32dev). **Not yet run on hardware.**
 Needs the pump's real MAC (macOS only shows a CoreBluetooth UUID): the config logs a
 `pump_finder` line with it on first boot.
+
+**2026-10-03 14:51 — ESPHome firmware verified on hardware (read path).** ESP32 (rev 3.1)
+connects, authenticates and reports state, presets and power, matching the laptop readings
+(2400 rpm, medium, 537 W, presets 1450/2400/2700). Speed select from Home Assistant confirmed (switched to High, pump followed: 2700 rpm, ~746 W). Run switch and preset numbers not yet exercised from Home Assistant.
+
+**2026-10-03 14:59 — mains power-cycle with the ESP32 connected.** Link dropped (reason 0x08,
+supervision timeout), pump was advertising again ~34 s later, ESP32 reconnected and
+authenticated on its own with the same access code → **the access code survives a
+power-cycle.** The pump restarted by itself into priming (1800 rpm) with the previously
+selected speed (High) retained.
+
+**2026-10-03 15:23 — API disconnects.** With the ESP32 connected to the pump and the tracker
+scanning continuously at a 320 ms window / 320 ms interval, the ESPHome API connection kept
+dropping (slow handshakes, bursts of delayed log lines). Suspected Wi-Fi/BLE radio contention.
+Config now scans with a 30 ms window and stops scanning while the pump is connected.
