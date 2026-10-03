@@ -39,9 +39,21 @@ wifi:
 esp32_ble_tracker:
   on_ble_advertise:
     - then:
+        # Logs the pump's MAC (and its access code while the pairing window is open).
+        # Matches on the manufacturer data (company 0x0447, device type 0 = pump)
+        # rather than the name, which only arrives in the scan response.
         - lambda: |-
-            if (x.get_name() == "HPUMP") {
-              ESP_LOGI("pump_finder", "HPUMP found at %s (RSSI %d)", x.address_str().c_str(), x.get_rssi());
+            static uint32_t last_log = 0;
+            for (auto &m : x.get_manufacturer_datas()) {
+              if (!(m.uuid == esp32_ble_tracker::ESPBTUUID::from_uint16(0x0447)) || m.data.size() < 23 || m.data[0] != 0)
+                continue;
+              if (millis() - last_log < 10000)
+                return;
+              last_log = millis();
+              ESP_LOGI("pump_finder", "Pump found at %s (RSSI %d)", x.address_str().c_str(), x.get_rssi());
+              if (m.data[19] != 0) {
+                ESP_LOGI("pump_finder", "  access code: %c%c%c%c", m.data[19], m.data[20], m.data[21], m.data[22]);
+              }
             }
 
 ble_client:
@@ -92,6 +104,9 @@ switch:
   - platform: template
     name: Run
     icon: mdi:pump
+    # Never replay a saved state at boot: that would stop or start the pump
+    # every time the ESP32 restarts.
+    restore_mode: DISABLED
     lambda: |-
       if (!id(pump).has_state()) return {};
       return id(pump).running();
