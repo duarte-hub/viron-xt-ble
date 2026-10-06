@@ -1,0 +1,197 @@
+# Acid doser on a relay, interlocked with the Viron pump (needs `viron_pump: id: pump`).
+#
+# The relay itself is not exposed. A dose is requested in mL (button, or the
+# `dose_acid` action from Home Assistant) and every rule below is enforced on the
+# ESP32, so a Home Assistant bug or outage cannot overdose:
+#
+#   - the pump must be running, past priming, for acid_flow_settle_s first
+#   - dosing stops at once if the pump stops or the Bluetooth link to it drops
+#   - a single dose is capped at acid_max_dose_ml
+#   - the total per day is capped at acid_max_daily_ml (the count survives reboots;
+#     it resets at midnight only if the clock is synced, otherwise it stays capped)
+#   - acid_min_interval_min must pass between doses, and after every reboot
+#   - nothing doses until acid_ml_per_min is set
+#
+# Software cannot see whether water is actually moving. Wire the doser's 24 V
+# supply through a flow switch as well, and use the relay's normally-open contact.
+
+substitutions:
+  acid_relay_pin: GPIO26
+  acid_relay_inverted: "false"   # "true" for active-low relay boards
+  acid_ml_per_min: "0"           # your doser's rate; 0 disables dosing
+  acid_max_dose_ml: "100"        # placeholder - size for your pool
+  acid_max_daily_ml: "300"       # placeholder - size for your pool
+  acid_min_interval_min: "30"
+  acid_flow_settle_s: "300"
+
+globals:
+  - id: acid_dosed_today_ml
+    type: float
+    restore_value: true
+    initial_value: "0"
+  - id: acid_dose_target_ml
+    type: float
+    initial_value: "0"
+  - id: acid_dose_done_ml
+    type: float
+    initial_value: "0"
+  - id: acid_last_dose_end_ms
+    type: uint32_t
+    initial_value: "0"   # boot counts as a dose, so the interval applies after a restart
+  - id: acid_flow_ready
+    type: bool
+    initial_value: "false"
+
+time:
+  - platform: homeassistant
+    id: acid_clock
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - lambda: id(acid_dosed_today_ml) = 0;
+
+switch:
+  - platform: gpio
+    id: acid_relay
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${acid_relay_pin}
+      inverted: ${acid_relay_inverted}
+    # Backstop, independent of the dose bookkeeping below: the relay can never
+    # stay on longer than the largest single dose takes.
+    on_turn_on:
+      - delay: !lambda |-
+          float rate = ${acid_ml_per_min};
+          return rate > 0 ? (uint32_t) (${acid_max_dose_ml} / rate * 60000.0f) + 5000 : 0;
+      - switch.turn_off: acid_relay
+      - lambda: id(acid_last_dose_end_ms) = millis();
+    on_turn_off:
+      - lambda: id(acid_last_dose_end_ms) = millis();
+
+script:
+  - id: dose_acid
+    mode: single
+    parameters:
+      ml: float
+    then:
+      - lambda: |-
+          const float rate = ${acid_ml_per_min};
+          const float remaining_today = ${acid_max_daily_ml} - id(acid_dosed_today_ml);
+          const uint32_t interval_ms = ${acid_min_interval_min} * 60000UL;
+          const char *refused = nullptr;
+          if (rate <= 0) refused = "Refused: acid_ml_per_min not set";
+          else if (ml <= 0) refused = "Refused: nothing to dose";
+          else if (id(acid_relay).state) refused = "Refused: already dosing";
+          else if (!id(acid_flow_ready)) refused = "Refused: pump not running long enough";
+          else if (millis() - id(acid_last_dose_end_ms) < interval_ms) refused = "Refused: too soon after last dose or restart";
+          else if (remaining_today <= 0) refused = "Refused: daily limit reached";
+          if (refused != nullptr) {
+            ESP_LOGW("acid", "%s (asked for %.0f mL)", refused, ml);
+            id(acid_status).publish_state(refused);
+            return;
+          }
+          float target = std::min(ml, std::min((float) ${acid_max_dose_ml}, remaining_today));
+          id(acid_dose_target_ml) = target;
+          id(acid_dose_done_ml) = 0;
+          ESP_LOGI("acid", "Dosing %.0f mL (asked for %.0f)", target, ml);
+          id(acid_status).publish_state(str_sprintf("Dosing %.0f mL", target));
+          id(acid_relay).turn_on();
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          // "Flow ready" = pump reported running and not priming for acid_flow_settle_s.
+          static bool was_flowing = false;
+          static uint32_t flowing_since = 0;
+          bool flowing = id(pump).has_state() && id(pump).running() && !id(pump).priming();
+          if (flowing && !was_flowing) flowing_since = millis();
+          was_flowing = flowing;
+          id(acid_flow_ready) = flowing && millis() - flowing_since >= ${acid_flow_settle_s} * 1000UL;
+
+          if (!id(acid_relay).state) return;
+          const float per_second = ${acid_ml_per_min} / 60.0f;
+          id(acid_dose_done_ml) += per_second;
+          id(acid_dosed_today_ml) += per_second;
+          const char *stop = nullptr;
+          if (!id(acid_flow_ready)) stop = "Stopped: pump not running";
+          else if (id(acid_dosed_today_ml) >= ${acid_max_daily_ml}) stop = "Stopped: daily limit reached";
+          else if (id(acid_dose_done_ml) >= id(acid_dose_target_ml)) stop = "Done";
+          if (stop != nullptr) {
+            id(acid_relay).turn_off();
+            ESP_LOGI("acid", "%s after %.0f mL", stop, id(acid_dose_done_ml));
+            id(acid_status).publish_state(str_sprintf("%s (%.0f mL)", stop, id(acid_dose_done_ml)));
+          }
+
+api:
+  actions:
+    - action: dose_acid
+      variables:
+        ml: float
+      then:
+        - script.execute:
+            id: dose_acid
+            ml: !lambda return ml;
+
+number:
+  - platform: template
+    name: Acid dose amount
+    id: acid_dose_amount
+    icon: mdi:beaker-outline
+    unit_of_measurement: mL
+    optimistic: true
+    restore_value: true
+    initial_value: 0
+    min_value: 0
+    max_value: ${acid_max_dose_ml}
+    step: 5
+
+button:
+  - platform: template
+    name: Dose acid
+    icon: mdi:beaker-plus-outline
+    on_press:
+      - script.execute:
+          id: dose_acid
+          ml: !lambda return id(acid_dose_amount).state;
+  - platform: template
+    name: Stop acid dose
+    icon: mdi:beaker-remove-outline
+    on_press:
+      - lambda: |-
+          if (!id(acid_relay).state) return;
+          id(acid_relay).turn_off();
+          id(acid_status).publish_state(str_sprintf("Stopped by user (%.0f mL)", id(acid_dose_done_ml)));
+
+binary_sensor:
+  - platform: template
+    name: Acid dosing
+    icon: mdi:beaker
+    lambda: return id(acid_relay).state;
+  - platform: template
+    name: Acid dosing allowed
+    entity_category: diagnostic
+    lambda: return id(acid_flow_ready);
+
+sensor:
+  - platform: template
+    name: Acid dosed today
+    icon: mdi:beaker-check-outline
+    unit_of_measurement: mL
+    accuracy_decimals: 0
+    state_class: total_increasing
+    update_interval: 10s
+    lambda: |-
+      static int last = -1;
+      int now = (int) id(acid_dosed_today_ml);
+      if (now == last) return {};
+      return last = now;
+
+text_sensor:
+  - platform: template
+    name: Acid doser status
+    id: acid_status
+    icon: mdi:beaker-question-outline

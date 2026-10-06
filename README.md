@@ -54,6 +54,17 @@ Entities are template platforms calling the component, e.g. `id(pump).start()`,
 
 The pump accepts one BLE connection at a time and drops a link that is idle for 10 s.
 
+## Optional packages
+
+[`esphome/packages/`](esphome/packages) has two add-ons for relay outputs, enabled from the
+commented block at the top of `pool-pump.yaml`:
+
+- `aux-contact.yaml` — a relay as a plain dry contact.
+- `acid-doser.yaml` — doses a requested volume of acid through a relay. The limits (pump must
+  be running, per-dose and per-day caps, minimum interval) are enforced on the ESP32, not in
+  Home Assistant. It cannot detect real water flow: fit a flow switch in series with the
+  doser's supply. The default limits are placeholders, not recommendations.
+
 ## Tools
 
 Python scripts used for the reverse engineering, run with [uv](https://docs.astral.sh/uv/):

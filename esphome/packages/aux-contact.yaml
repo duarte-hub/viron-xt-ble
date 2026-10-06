@@ -1,0 +1,15 @@
+# A relay used as a plain dry contact (wire the equipment to the relay's COM and NO).
+
+substitutions:
+  aux_relay_pin: GPIO27
+  aux_relay_inverted: "false"   # "true" for active-low relay boards
+  aux_contact_name: Aux contact
+
+switch:
+  - platform: gpio
+    name: ${aux_contact_name}
+    icon: mdi:electric-switch
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${aux_relay_pin}
+      inverted: ${aux_relay_inverted}
