@@ -1,0 +1,195 @@
+# Filter pressure from a 5 V ratiometric transducer (0.5-4.5 V out), interlocked
+# with the Viron pump (needs `viron_pump: id: pump`).
+#
+# Wiring (ESP32 ADCs top out around 3.1 V, so divide the signal down):
+#   sensor +5V    -> 5V / VBUS
+#   sensor GND    -> GND
+#   sensor signal -> 10k -> ${pressure_pin}, and 20k from ${pressure_pin} to GND
+#   (optional 100 nF from ${pressure_pin} to GND)
+# 10k/20k scales 4.5 V to 3.0 V; pressure_divider undoes it.
+#
+# On a variable-speed pump the pressure follows the RPM, so the "needs cleaning"
+# comparison against the clean baseline only runs at the High preset, after the
+# pump has been running past priming for 2 minutes. Press "Set clean filter
+# pressure" in that state after cleaning or backwashing.
+#
+# Entities:
+#   Filter pressure, Filter pressure rise, Pressure sensor voltage (diagnostic)
+#   Filter needs cleaning, Low filter pressure, Pressure sensor fault
+#   Clean filter pressure, Cleaning alert rise, Low pressure alert (config)
+#   Set clean filter pressure (button)
+
+substitutions:
+  pressure_pin: GPIO0                 # an ADC pin: GPIO0-6 on ESP32-C6, GPIO32-39 on classic ESP32
+  pressure_divider: "1.5"             # (R1 + R2) / R2; 1.5 for 10k/20k
+  pressure_full_scale_kpa: "206.8"    # pressure at 4.5 V: 206.8 for 0-30 psi, 689.5 for 0-100 psi
+
+globals:
+  # Running past priming for 2 minutes, at any speed.
+  - id: pressure_pump_settled
+    type: bool
+    initial_value: "false"
+  # Settled and on the High preset for 2 minutes: the only state in which
+  # pressure is compared against the clean baseline.
+  - id: pressure_comparable
+    type: bool
+    initial_value: "false"
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          static uint32_t settled_since = 0, high_since = 0;
+          bool settled = id(pump).has_state() && id(pump).running() && !id(pump).priming();
+          bool high = settled && id(pump).speed() == 2;
+          uint32_t now = millis();
+          if (!settled) settled_since = 0;
+          else if (settled_since == 0) settled_since = now;
+          if (!high) high_since = 0;
+          else if (high_since == 0) high_since = now;
+          id(pressure_pump_settled) = settled_since != 0 && now - settled_since >= 120000;
+          id(pressure_comparable) = high_since != 0 && now - high_since >= 120000;
+
+sensor:
+  - platform: adc
+    id: pressure_sensor_v
+    name: Pressure sensor voltage
+    pin: ${pressure_pin}
+    attenuation: 12db
+    entity_category: diagnostic
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    update_interval: 1s
+    filters:
+      - multiply: ${pressure_divider}   # volts at the sensor
+      - sliding_window_moving_average:
+          window_size: 10
+          send_every: 10
+  - platform: copy
+    source_id: pressure_sensor_v
+    id: filter_pressure
+    name: Filter pressure
+    unit_of_measurement: kPa
+    device_class: pressure
+    state_class: measurement
+    icon: mdi:gauge
+    accuracy_decimals: 0
+    filters:
+      - lambda: |-
+          if (x < 0.3f) return NAN;   // below 0.5 V: unplugged or broken wire
+          return x;
+      - calibrate_linear:
+          - 0.5 -> 0.0
+          - 4.5 -> ${pressure_full_scale_kpa}
+      - clamp:
+          min_value: 0
+  - platform: template
+    name: Filter pressure rise
+    icon: mdi:arrow-up-bold
+    unit_of_measurement: kPa
+    device_class: pressure
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      if (!id(pressure_comparable)) return {};
+      float p = id(filter_pressure).state, clean = id(clean_pressure).state;
+      if (isnan(p) || clean <= 0) return {};
+      return p - clean;
+
+binary_sensor:
+  - platform: template
+    name: Filter needs cleaning
+    icon: mdi:air-filter
+    device_class: problem
+    # Holds its last state at other speeds rather than flapping.
+    lambda: |-
+      if (!id(pressure_comparable)) return {};
+      float p = id(filter_pressure).state, clean = id(clean_pressure).state;
+      if (isnan(p) || clean <= 0) return {};
+      return p - clean >= id(clean_rise_alert).state;
+    filters:
+      - delayed_on: 5min
+  - platform: template
+    name: Low filter pressure
+    icon: mdi:gauge-low
+    device_class: problem
+    # Running but little pressure: lost prime, air leak, empty skimmer, closed
+    # suction valve. Pressure alone cannot see a closed return valve (that reads high).
+    lambda: |-
+      if (!id(pressure_pump_settled)) return false;
+      float p = id(filter_pressure).state;
+      if (isnan(p)) return {};
+      return p < id(low_pressure_alert).state;
+    filters:
+      - delayed_on: 60s
+  - platform: template
+    name: Pressure sensor fault
+    device_class: problem
+    entity_category: diagnostic
+    lambda: |-
+      float v = id(pressure_sensor_v).state;
+      if (isnan(v)) return {};
+      return v < 0.3f;
+
+number:
+  - platform: template
+    id: clean_pressure
+    name: Clean filter pressure
+    icon: mdi:gauge-full
+    entity_category: config
+    unit_of_measurement: kPa
+    mode: box
+    min_value: 0
+    max_value: 700
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 0   # 0 = not set
+  - platform: template
+    id: clean_rise_alert
+    name: Cleaning alert rise
+    icon: mdi:arrow-up-bold
+    entity_category: config
+    unit_of_measurement: kPa
+    mode: box
+    min_value: 10
+    max_value: 150
+    step: 5
+    optimistic: true
+    restore_value: true
+    initial_value: 60   # ~8-10 psi above clean, the usual rule of thumb
+  - platform: template
+    id: low_pressure_alert
+    name: Low pressure alert
+    icon: mdi:gauge-low
+    entity_category: config
+    unit_of_measurement: kPa
+    mode: box
+    min_value: 0
+    max_value: 100
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 10   # set just below your Low-speed reading
+
+button:
+  - platform: template
+    name: Set clean filter pressure
+    icon: mdi:gauge-full
+    entity_category: config
+    on_press:
+      - if:
+          condition:
+            lambda: return id(pressure_comparable) && !isnan(id(filter_pressure).state);
+          then:
+            - number.set:
+                id: clean_pressure
+                value: !lambda return id(filter_pressure).state;
+            - logger.log:
+                format: "Clean filter pressure set to %.0f kPa"
+                args: [id(filter_pressure).state]
+          else:
+            - logger.log:
+                level: WARN
+                format: "Not set: pump must be on High, past priming, for 2 minutes"
