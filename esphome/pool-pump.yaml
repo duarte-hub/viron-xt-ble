@@ -8,8 +8,8 @@
 #   pump_access_code  - 4 characters the pump broadcasts for ~100 s after a mains
 #                       power-cycle; read it with tools/probe.py watch.
 
-# Optional extras on relay outputs. Uncomment, set the values for your hardware,
-# and read the header of each package first - especially the acid doser's.
+# Optional extras. Uncomment, set the values for your hardware, and read the
+# header of each package first - especially the acid doser's.
 #
 # substitutions:
 #   acid_relay_pin: GPIO26
@@ -18,9 +18,11 @@
 #   acid_max_daily_ml: "300"
 #   aux_relay_pin: GPIO27
 #   aux_contact_name: Aux contact
+#   pressure_pin: GPIO34        # ADC pin; GPIO0 on a XIAO ESP32-C6
 # packages:
 #   acid: github://duarte-hub/viron-xt-ble/esphome/packages/acid-doser.yaml@main
 #   aux: github://duarte-hub/viron-xt-ble/esphome/packages/aux-contact.yaml@main
+#   pressure: github://duarte-hub/viron-xt-ble/esphome/packages/filter-pressure.yaml@main
 
 esphome:
   name: pool-pump

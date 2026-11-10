@@ -56,14 +56,18 @@ The pump accepts one BLE connection at a time and drops a link that is idle for 
 
 ## Optional packages
 
-[`esphome/packages/`](esphome/packages) has two add-ons for relay outputs, enabled from the
-commented block at the top of `pool-pump.yaml`:
+[`esphome/packages/`](esphome/packages) has three add-ons, enabled from the commented block
+at the top of `pool-pump.yaml`:
 
 - `aux-contact.yaml` — a relay as a plain dry contact.
 - `acid-doser.yaml` — doses a requested volume of acid through a relay. The limits (pump must
   be running, per-dose and per-day caps, minimum interval) are enforced on the ESP32, not in
   Home Assistant. It cannot detect real water flow: fit a flow switch in series with the
   doser's supply. The default limits are placeholders, not recommendations.
+- `filter-pressure.yaml` — filter pressure from a 5 V, 0.5–4.5 V transducer on an ADC pin
+  (through a 10k/20k divider). Compares against a stored clean-filter baseline at the High
+  preset only, since pressure follows RPM, and raises "needs cleaning", "low pressure" (lost
+  prime) and "sensor fault" problem sensors. Wiring is in the package header.
 
 ## Tools
 
